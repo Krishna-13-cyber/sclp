@@ -1,239 +1,1070 @@
-program
-	: global_decl_statement_list func_def_list                                               (rule 1)
-	| func_def_list                                                                          (rule 2)
-	| class
+%{
+#include <stdlib.h>
+#include <stdio.h>
+#include "symbol_table.h"
+#include "ast.h"
+#include "semantic.h"
+#include "code_printer.h"
+
+extern void yyerror(const char* s);
+extern int yylex();
+extern int yyparse();
+extern FILE* yyin;
+
+extern int linenumber;
+extern int assignment_flag;
+sym_ptr temp = NULL;
+ast_node *ast = NULL;
+
+#define YYDEBUG 1
+%}
+
+%define parse.error verbose
+%glr-parser 
+
+%union{
+    int integer;
+    int boolean;
+    char* string;
+    struct symbol* symbol_handle;
+    struct ast_node *node;
+    struct ast_node_statements *statements;
+    struct ast_node_compound_statement *compound_statement;
+    struct ast_node_declaration *declaration;
+    struct ast_node_array_declaration *array_declaration;
+    struct ast_node_assignment *assignment;
+    struct ast_node_array_assignment *array_assignment;
+    struct ast_node_array_access *array_access;
+    struct ast_node_expression *expression;
+    struct ast_node_range_expression *range_expression;
+    struct ast_node_constant *constant;
+    struct ast_node_variable *variable;
+    struct ast_node_conditional_if *conditional_if;
+    struct ast_node_conditional_else_if *conditional_else_if;
+    struct ast_node_loop_for *loop_for;
+    struct ast_node_loop_while *loop_while;
+    struct ast_node_loop_control *loop_control;
+    struct ast_node_function_def *function_def;
+    struct ast_node_param *param;
+    struct ast_node_class *class;
+    struct ast_node_object_decl *object_decl;
+    struct ast_node_object_call *object_call;
+    struct ast_node_function_call *function_call;
+    struct ast_node_arguments *arguments;
+    struct ast_node_utility_function_call *util_function_call;
+    struct ast_node_print_string_function_call *print_string_function_call;
+    struct ast_node_print_expression_function_call *print_expression_function_call;
+}
+
+%left LBRACE RBRACE
+
+%left LPAREN RPAREN
+
+%left LSQUARE RSQUARE
+
+%left OPR_LGL_OR
+%left OPR_LGL_AND
+
+%left OPR_BW_OR
+%left OPR_BW_AND
+
+%left OPR_EQ OPR_NE
+%left OPR_GT OPR_LT OPR_GE OPR_LE
+
+%left OPR_BW_LFT OPR_BW_RGT
+%left OPR_ADD OPR_SUB
+%left OPR_MUL OPR_DIV OPR_MOD
+
+%right OPR_BW_NOT OPR_LGL_NOT
+
+%token OPR_ASSIGNMENT
+
+%token SEMICOLON COLON COMMA DOT_OPERATOR
+
+%token DT_INT
+%token DT_BOOL
+%token DT_VOID
+%token DT_CHAR
+
+%token KW_IF KW_ELIF KW_ELSE
+
+%token KW_FOR KW_IN KW_WHILE KW_BREAK KW_CONTINUE KW_CLASS
+
+%token KW_RETURN KW_DEF
+
+%token KW_DIGITAL_READ KW_DIGITAL_WRITE KW_DELAY KW_PWM KW_START_COUNTER KW_STOP_COUNTER KW_READ_COUNTER
+%token KW_INIT_RPMSG KW_RECV_RPMSG
+%token KW_SEND_RPMSG_INT KW_SEND_RPMSG_CHAR KW_SEND_RPMSG_BOOL KW_SEND_RPMSG_INTS KW_SEND_RPMSG_CHARS KW_SEND_RPMSG_BOOLS
+%token KW_PRINT KW_PRINTLN
+
+%token <integer> CONST_INT CONST_CHAR
+%token <boolean> CONST_BOOL
+%token <string> CONST_STRING
+
+%token <symbol_handle> IDENTIFIER INT_IDENTIFIER BOOL_IDENTIFIER VOID_IDENTIFIER CHAR_IDENTIFIER INT_ARR_IDENTIFIER CHAR_ARR_IDENTIFIER BOOL_ARR_IDENTIFIER
+
+%type <node> translation_unit program
+%type <statements> statement
+%type <compound_statement> statement_list compound_statement conditional_statement_else class_inclusions
+%type <declaration> declaration declaration_assignment
+%type <array_declaration> array_declaration array_declaration_assignment
+%type <assignment> assignment
+%type <expression> arithmetic_expression boolean_expression relational_expression logical_expression return_statement function_call_datatypes
+%type <range_expression> range_expression
+%type <array_assignment> array_assignment
+%type <array_access> arithmetic_array_access boolean_array_access
+%type <conditional_if> conditional_statement
+%type <conditional_else_if> conditional_statement_else_if
+%type <loop_for> loop_statement_for
+%type <loop_while> loop_statement_while
+%type <function_def> function_definition
+%type <class> class 
+%type <object_decl> object_decl
+%type <object_call> object_call
+%type <param> parameter_list_def parameters
+%type <variable> parameter
+%type <function_call> int_function_call bool_function_call char_function_call void_function_call  
+%type <print_string_function_call> print_string_call
+%type <print_expression_function_call> print_expression_call
+%type <arguments> function_call_parameters
+%start start
+%%
+
+start: translation_unit {
+        ast = $1;
+     }
+     ;
+
+translation_unit: program {
+                    $$ = create_translation_unit();
+                    $$ = add_program_unit($$, $1);
+                }
+	            | translation_unit program {
+                    $$ = add_program_unit($1, $2);
+                }
+	            ;
+
+program: statement {
+        $$ = (ast_node*)$1;     
+       }
+       | function_definition {
+        $$ = (ast_node*)$1;
+       }
+       | class {
+           $$ = (ast_node*)$1;
+       }
+        | object_call  {
+        $$ = (ast_node*)$1;
+        }
+
+        | object_decl  {
+        $$ = (ast_node*)$1;
+        }
+       ;
+
+compound_statement: LBRACE statement_list RBRACE {
+                    $$ = $2;
+                  }
+                  ;
+
+statement_list: statement {
+                $$ = create_compound_statement_node();
+                $$ = add_compound_statement_node($$, $1);
+              }
+              | statement_list statement {
+                  $$  = add_compound_statement_node($1, $2);
+              }
+              | class_inclusions {
+                $$ = create_compound_statement_node();
+                $$ = add_compound_statement_node($$, $1);
+                }
+              ;
+
+statement: compound_statement {
+            $$ = create_statement_node(AST_NODE_COMPOUND_STATEMENT, (void*)$1);
+         }
+         | empty_statement {
+            $$ = create_statement_node(AST_NODE_EMPTY_STATEMENT, NULL); 
+         }
+         | declaration {
+             $$ = create_statement_node(AST_NODE_DECLARATION, (void*)$1);
+         }
+         | array_declaration {
+             $$ = create_statement_node(AST_NODE_ARRAY_DECLARATION, (void*)$1);
+         }
+         | declaration_assignment {
+             $$ = create_statement_node(AST_NODE_DECLARATION, (void*)$1);
+         }
+         | array_declaration_assignment {
+             $$ = create_statement_node(AST_NODE_ARRAY_DECLARATION, (void*)$1);
+         }
+         | assignment {
+             $$ = create_statement_node(AST_NODE_ASSIGNMENT, (void*)$1);
+         }
+         | array_assignment {
+             $$ = create_statement_node(AST_NODE_ARRAY_ASSIGNMENT, (void*)$1);
+         }
+         | conditional_statement {
+             $$ = create_statement_node(AST_NODE_CONDITIONAL_IF, (void*)$1);
+         }
+         | loop_statement_for {
+             $$ = create_statement_node(AST_NODE_LOOP_FOR, (void*)$1);
+         }
+         | loop_statement_while {
+             $$ = create_statement_node(AST_NODE_LOOP_WHILE, (void*)$1);
+         }
+         | return_statement {
+             $$ = create_statement_node(AST_NODE_FUNC_RETURN, (void*)$1);
+         }
+         | int_function_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_FUNC_CALL, (void*)$1);
+         }
+         | bool_function_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_FUNC_CALL, (void*)$1);
+         }
+         | char_function_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_FUNC_CALL, (void*)$1);
+         }
+         | void_function_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_FUNC_CALL, (void*)$1);
+         }
+         | KW_BREAK SEMICOLON {
+             $$ = create_statement_node(AST_NODE_LOOP_BREAK, (void*)create_loop_control_node(AST_NODE_LOOP_BREAK));
+         }
+         | KW_CONTINUE SEMICOLON {
+             $$ = create_statement_node(AST_NODE_LOOP_CONTINUE, (void*)create_loop_control_node(AST_NODE_LOOP_CONTINUE));
+         }
+         | print_string_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_PRINT_STRING_FUNCTION_CALL, (void*)$1);
+         }
+         | print_expression_call SEMICOLON {
+             $$ = create_statement_node(AST_NODE_PRINT_EXP_FUNCTION_CALL, (void*)$1);
+         }
+         ;
+
+class_inclusions: empty_statement {
+            $$ = create_statement_node(AST_NODE_EMPTY_STATEMENT, NULL); 
+         }
+         | declaration {
+             $$ = create_statement_node(AST_NODE_DECLARATION, (void*)$1);
+         }
+         | array_declaration {
+             $$ = create_statement_node(AST_NODE_ARRAY_DECLARATION, (void*)$1);
+         }
+         | declaration_assignment {
+             $$ = create_statement_node(AST_NODE_DECLARATION, (void*)$1);
+         }
+         | array_declaration_assignment {
+             $$ = create_statement_node(AST_NODE_ARRAY_DECLARATION, (void*)$1);
+         }        
+         ;
+
+
+empty_statement: SEMICOLON {
+              printf ("blank statement\n");
+            }
+            ;
+
+declaration: DT_INT IDENTIFIER SEMICOLON { 
+               if ($2 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+
+               $2->data_type = DT_INTEGER;
+               $$ = create_declaration_node($2, NULL);
+
+               printf ("int %s ;\n", $2->identifier);
+           }
+           | DT_BOOL IDENTIFIER SEMICOLON {
+               if ($2 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+
+               $2->data_type = DT_BOOLEAN;
+               $$ = create_declaration_node($2, NULL);
+
+               printf ("bool %s ;\n", $2->identifier);
+           }
+           | DT_CHAR IDENTIFIER SEMICOLON {
+               if ($2 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+
+               $2->data_type = DT_CHAR_;
+               $$ = create_declaration_node($2, NULL);
+           }
+           ;
+
+array_declaration: DT_INT LSQUARE arithmetic_expression RSQUARE IDENTIFIER SEMICOLON {
+                    if ($5 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    $5->data_type = DT_INT_ARR;
+                    $5->array_size = $3->value;
+                    $$ = create_array_declaration_node($5, $3, NULL);
+                }
+                | DT_CHAR LSQUARE arithmetic_expression RSQUARE IDENTIFIER SEMICOLON {
+                    if ($5 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    $5->data_type = DT_CHAR_ARR;
+                    $5->array_size = $3->value;
+                    $$ = create_array_declaration_node($5, $3, NULL);
+                }
+                | DT_BOOL LSQUARE arithmetic_expression RSQUARE IDENTIFIER SEMICOLON {
+                    if ($5 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    $5->data_type = DT_BOOL_ARR;
+                    $5->array_size = $3->value;
+                    $$ = create_array_declaration_node($5, $3, NULL);
+                }
+                ;
+
+declaration_assignment: DT_INT IDENTIFIER OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+               if ($2 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+
+               $2->data_type = DT_INTEGER;
+               $2->value = $4->value;
+               $$ = create_declaration_node($2, $4);
+
+               printf ("%s := %d\n", $2->identifier, $2->value);
+            }
+            | DT_BOOL IDENTIFIER OPR_ASSIGNMENT boolean_expression SEMICOLON {
+               if ($2 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+
+               $2->data_type = DT_BOOLEAN;
+               $2->value = $4->value;
+               $$ = create_declaration_node($2, $4);
+
+               printf ("%s := %d\n", $2->identifier, $2->value);
+            }
+            | DT_CHAR IDENTIFIER OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+                if ($2 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+
+                $2->data_type = DT_CHAR_;
+                $2->value = $4->value;
+                $$ = create_declaration_node($2, $4);
+
+                printf("%s := %c\n", $2->identifier, $2->value);
+            }
+            ;
+
+array_declaration_assignment: DT_CHAR LSQUARE arithmetic_expression RSQUARE IDENTIFIER OPR_ASSIGNMENT CONST_STRING SEMICOLON {
+                                if ($5 == NULL)
+                                {
+                                    yyerror("variable already defined");
+                                }
+
+                                $5->data_type = DT_CHAR_ARR;
+                                $5->array_size = $3->value;
+                                $$ = create_array_declaration_node($5, $3, $7);
+                            }
+                            ;
+
+assignment: INT_IDENTIFIER OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+               if ($1 == NULL)
+               {
+                   yyerror("variable already defined");
+               }
+               
+               if ($1->is_function == 1)
+               {
+                   yyerror("identifier is a function, cannot assign value");
+               }
+               
+               if ($1->is_constant == 1)
+               {
+                   yyerror("identifer is a pin number constant, cannot assign value");
+               }
+
+               $1->data_type = DT_INTEGER;
+               $1->value = $3->value;
+               $$ = create_assignment_node($1, $3);
+
+               printf("%s := %d\n", $1->identifier, $1->value);
+            }
+            | BOOL_IDENTIFIER OPR_ASSIGNMENT boolean_expression SEMICOLON {
+                if ($1 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+                
+                if ($1->is_function == 1)
+                {
+                    yyerror("identifier is a function, cannot assign value");
+                }
+                
+                if ($1->is_constant == 1)
+                {
+                    yyerror("identifer is a pin number constant, cannot assign value");
+                }
+                
+                $1->data_type = DT_BOOLEAN;  
+                $1->value = $3->value;
+                $$ = create_assignment_node($1, $3);
+
+               printf("%s := %d\n", $1->identifier, $1->value);
+            }
+            | CHAR_IDENTIFIER OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+                if ($1 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+
+                if ($1->is_function == 1)
+                {
+                    yyerror("identifier is a function, cannot assign value");
+                }
+
+                if ($1->is_constant == 1)
+                {
+                    yyerror("identifier is a pin number constant, cannot assign value");
+                }
+
+                $1->data_type = DT_CHAR_;
+                $1->value = $3->value;
+                $$ = create_assignment_node($1, $3);
+
+                printf("%s := %c\n", $1->identifier, $1->value);
+            }
+            ;
+
+array_assignment: INT_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+                    if ($1 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    if ($1->is_function == 1)
+                    {
+                        yyerror("identifier is a function, cannot assign value");
+                    }
+
+                    if ($1->is_constant == 1)
+                    {
+                        yyerror("identifier is a pin number constant, cannot assign value");
+                    }
+
+                    $1->data_type = DT_INT_ARR;
+                    $$ = create_array_assignment_node($1, $3, $6);
+                }
+                | CHAR_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE OPR_ASSIGNMENT arithmetic_expression SEMICOLON {
+                    if ($1 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    if ($1->is_function == 1)
+                    {
+                        yyerror("identifier is a function, cannot assign value");
+                    }
+
+                    if ($1->is_constant == 1)
+                    {
+                        yyerror("identifier is a pin number constant, cannot assign value");
+                    }
+
+                    $1->data_type = DT_CHAR_ARR;
+                    $$ = create_array_assignment_node($1, $3, $6);
+                }
+                | BOOL_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE OPR_ASSIGNMENT boolean_expression SEMICOLON {
+                    if ($1 == NULL)
+                    {
+                        yyerror("variable already defined");
+                    }
+
+                    if ($1->is_function == 1)
+                    {
+                        yyerror("identifier is a function, cannot assign value");
+                    }
+
+                    if ($1->is_constant == 1)
+                    {
+                        yyerror("identifier is a pin number constant, cannot assign value");
+                    }
+
+                    $1->data_type = DT_BOOL_ARR;
+                    $$ = create_array_assignment_node($1, $3, $6);
+                }
+                ;
+
+arithmetic_array_access: INT_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE {
+                if ($1 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+
+                if ($1->is_function == 1)
+                {
+                    yyerror("identifier is a function, cannot assign value");
+                }
+
+                if ($1->is_constant == 1)
+                {
+                    yyerror("identifier is a pin number constant, cannot assign value");
+                }
+
+                $1->data_type = DT_INT_ARR;
+                $$ = create_array_access_node($1, $3);
+            }
+            | CHAR_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE {
+                if ($1 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+
+                if ($1->is_function == 1)
+                {
+                    yyerror("identifier is a function, cannot assign value");
+                }
+
+                if ($1->is_constant == 1)
+                {
+                    yyerror("identifier is a pin number constant, cannot assign value");
+                }
+
+                $1->data_type = DT_CHAR_ARR;
+                $$ = create_array_access_node($1, $3);
+            }
+            ;
+
+boolean_array_access: BOOL_ARR_IDENTIFIER LSQUARE arithmetic_expression RSQUARE {
+                if ($1 == NULL)
+                {
+                    yyerror("variable already defined");
+                }
+
+                if ($1->is_function == 1)
+                {
+                    yyerror("identifier is a function, cannot assign value");
+                }
+
+                if ($1->is_constant == 1)
+                {
+                    yyerror("identifier is a pin number constant, cannot assign value");
+                }
+
+                $1->data_type = DT_BOOL_ARR;
+                $$ = create_array_access_node($1, $3);
+            }
+            ;
+
+arithmetic_expression: CONST_INT {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_CONSTANT, $1, NULL, NULL);
+          }
+          | CONST_CHAR {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_CONSTANT_CHAR, $1, NULL, NULL);
+          }
+          | INT_IDENTIFIER {
+              if ($1 != NULL)
+              {
+                  if ($1->data_type == DT_INTEGER)
+                  {
+                      $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_VARIABLE, $1->value, (ast_node*)create_variable_node(DT_INTEGER, $1), NULL);
+                  }
+                  else if ($1->data_type == DT_UNDEF)
+                  {
+                      yyerror("variable undefined");
+                  }
+                  else if ($1->data_type == DT_BOOLEAN)
+                  {
+                      yyerror("bool variable not allowed with int/char");
+                  }
+              }
+          } 
+          | CHAR_IDENTIFIER {
+              if ($1 != NULL)
+              {
+                  if ($1->data_type == DT_CHAR_)
+                  {
+                      $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_VARIABLE, $1->value, (ast_node*)create_variable_node(DT_CHAR_, $1), NULL);
+                  }
+                  else if ($1->data_type == DT_UNDEF)
+                  {
+                      yyerror("variable undefined");
+                  }
+                  else if ($1->data_type == DT_BOOLEAN)
+                  {
+                      yyerror("bool variable not allowed with int/char");
+                  }
+              }
+          }
+          | arithmetic_array_access {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_ARRAY_ACCESS, 0, (ast_node*)$1, NULL);
+          }
+          | int_function_call {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_FUNC_CALL, $1->symbol_entry->value, (ast_node*)$1, NULL);
+          }
+          | char_function_call {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_NODE_FUNC_CALL, $1->symbol_entry->value, (ast_node*)$1, NULL);
+          }
+          | arithmetic_expression OPR_BW_OR arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_BW_OR, $1->value | $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_BW_AND arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_BW_AND, $1->value & $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_BW_LFT arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_BW_LFT, $1->value << $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_BW_RGT arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_BW_RGT, $1->value >> $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_ADD arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_ADD, $1->value + $3->value, (ast_node*)$1, (ast_node*)$3);
+          } 
+          | arithmetic_expression OPR_SUB arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_SUB, $1->value - $3->value, (ast_node*)$1, (ast_node*)$3);
+          } 
+          | arithmetic_expression OPR_MUL arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_MUL, $1->value * $3->value, (ast_node*)$1, (ast_node*)$3);
+          } 
+          | arithmetic_expression OPR_DIV arithmetic_expression {
+              if ($3->value == 0)
+              {
+                  yyerror("division by 0");
+              }
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_DIV, $1->value / $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_MOD arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_MOD, $1->value % $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | OPR_BW_NOT arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_BW_NOT, ~ $2->value, NULL, (ast_node*)$2);
+          }
+          | OPR_SUB arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_ARITHMETIC_EXP, AST_OPR_SUB, -1*$2->value, NULL, (ast_node*)$2);
+          } 
+          | LPAREN arithmetic_expression RPAREN {
+              $$ = $2;
+          }
+          ;
+
+boolean_expression: CONST_BOOL {
+              $$ = create_expression_node(AST_NODE_BOOLEAN_EXP, AST_NODE_CONSTANT, $1, NULL, NULL);
+          }
+          | BOOL_IDENTIFIER {
+              if ($1 != NULL)
+              {
+                  if ($1->data_type == DT_BOOLEAN)
+                  {
+                      $$ = create_expression_node(AST_NODE_BOOLEAN_EXP, AST_NODE_VARIABLE, $1->value, (ast_node*)create_variable_node(DT_BOOLEAN, $1), NULL);
+                  }
+                  else if ($1->data_type == DT_UNDEF)
+                  {
+                      yyerror("variable undefined");
+                  }
+                  else
+                  {
+                      yyerror("int variable not allowed with bool");
+                  }
+              }
+          }
+          | boolean_array_access {
+              $$ = create_expression_node(AST_NODE_BOOLEAN_EXP, AST_NODE_ARRAY_ACCESS, 0, (ast_node*)$1, NULL);
+          }
+          | bool_function_call {
+              $$ = create_expression_node(AST_NODE_BOOLEAN_EXP, AST_NODE_FUNC_CALL, $1->symbol_entry->value, (ast_node*)$1, NULL);
+          }
+          | relational_expression {
+              $$ = $1;
+          }
+          | logical_expression {
+              $$ = $1;
+          }
+          | LPAREN boolean_expression RPAREN {
+              $$ = $2;
+          }
+          ;
+
+relational_expression: arithmetic_expression OPR_GT arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_GT, $1->value > $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_LT arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_LT, $1->value < $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_EQ arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_EQ, $1->value == $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_NE arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_NE, $1->value != $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_GE arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_GE, $1->value >= $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | arithmetic_expression OPR_LE arithmetic_expression {
+              $$ = create_expression_node(AST_NODE_RELATIONAL_EXP, AST_OPR_LE, $1->value <= $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          ;
+
+
+logical_expression: OPR_LGL_NOT boolean_expression {
+              $$ = create_expression_node(AST_NODE_LOGICAL_EXP, AST_OPR_LGL_NOT, $2->value ? 0 : 1, NULL, (ast_node*)$2);
+          } 
+          | boolean_expression OPR_LGL_AND boolean_expression {
+              $$ = create_expression_node(AST_NODE_LOGICAL_EXP, AST_OPR_LGL_AND, $1->value & $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          | boolean_expression OPR_LGL_OR boolean_expression {
+              $$ = create_expression_node(AST_NODE_LOGICAL_EXP, AST_OPR_LGL_OR, $1->value | $3->value, (ast_node*)$1, (ast_node*)$3);
+          }
+          ;
+
+conditional_statement: KW_IF COLON boolean_expression compound_statement conditional_statement_else_if conditional_statement_else {
+                          printf("inside if\n");
+                          $$ = create_conditional_if_node($3, $4, $5, $6);
+                     }
+                     ;  
+
+conditional_statement_else_if: conditional_statement_else_if KW_ELIF COLON boolean_expression compound_statement {
+                                 printf("inside else if\n");
+                                 $$ = add_else_if_node($1, $4, $5);
+                             }
+                             | /* empty */    {
+                                 $$ = create_else_if_node();
+                             }
+                             ;
+
+conditional_statement_else: KW_ELSE compound_statement {
+                              printf("inside else\n");
+                              $$ = $2;
+                          }
+                          | /* empty */ {
+                              $$ = NULL;
+                          }
+                          ;
+
+loop_statement_for: KW_FOR COLON IDENTIFIER {
+                      $3->data_type = DT_INTEGER;}                    
+                    KW_IN range_expression compound_statement {
+                      $3->value = $6->start->value;
+                      $$ = create_loop_for_node(create_variable_node(AST_DT_INT, $3), $6, $7);
+                  }
+                  ;
+
+range_expression: COLON arithmetic_expression {
+                        $$ = create_range_expression_node(NULL, $2, NULL);
+                    }
+                    | arithmetic_expression COLON arithmetic_expression {
+                        $$ = create_range_expression_node($1, $3, NULL);
+                    }
+                    | arithmetic_expression COLON arithmetic_expression COLON arithmetic_expression {
+                        $$ = create_range_expression_node($1, $3, $5);
+                    }
+                    ;
+
+loop_statement_while: KW_WHILE COLON boolean_expression compound_statement {
+                      printf("inside while\n");
+                      $$ = create_loop_while_node($3, $4);
+                    }
+                    ;
+
+function_definition: KW_DEF IDENTIFIER COLON DT_INT {
+                       if ($2 == NULL){yyerror("function name already defined");}
+                       temp = $2; temp->data_type = DT_INTEGER;} 
+                   COLON parameters compound_statement {
+                       if (vec_last(&$8->child_nodes)->node_type == AST_NODE_FUNC_RETURN)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, vec_pop(&$8->child_nodes)->child_nodes.return_statement);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type == DT_VOID_)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, NULL);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type != DT_VOID_)
+                       {
+                           yyerror("return statement missing in a non void function");
+                       }
+                       temp = NULL;
+                       
+                       if (check_function_definition($$) == -1)
+                       {
+                          yyerror("return statement different from return type");
+                       }
+                       printf("func\n");
+                   }
+                   | KW_DEF IDENTIFIER COLON DT_BOOL {
+                       if ($2 == NULL){yyerror("function name already defined");}
+                       temp = $2; temp->data_type = DT_BOOLEAN;} 
+                   COLON parameters compound_statement {
+                       if (vec_last(&$8->child_nodes)->node_type == AST_NODE_FUNC_RETURN)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, vec_pop(&$8->child_nodes)->child_nodes.return_statement);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type == DT_VOID_)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, NULL);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type != DT_VOID_)
+                       {
+                           yyerror("return statement missing in a non void function");
+                       }
+                       temp = NULL;
+                       
+                       if (check_function_definition($$) == -1)
+                       {
+                          yyerror("return statement different from return type");
+                       }
+                       printf("func\n");
+                   }
+                   | KW_DEF IDENTIFIER COLON DT_CHAR {
+                       if ($2 == NULL){yyerror("function name already defined");}
+                       temp = $2; temp->data_type = DT_CHAR_;} 
+                   COLON parameters compound_statement {
+                       if (vec_last(&$8->child_nodes)->node_type == AST_NODE_FUNC_RETURN)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, vec_pop(&$8->child_nodes)->child_nodes.return_statement);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type == DT_VOID_)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, NULL);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type != DT_VOID_)
+                       {
+                           yyerror("return statement missing in a non void function");
+                       }
+                       temp = NULL;
+                       
+                       if (check_function_definition($$) == -1)
+                       {
+                          yyerror("return statement different from return type");
+                       }
+                       printf("func\n");
+                   }
+                   | KW_DEF IDENTIFIER COLON DT_VOID {
+                       if ($2 == NULL){yyerror("function name already defined");}
+                       temp = $2; temp->data_type = DT_VOID_;} 
+                   COLON parameters compound_statement {
+                       if (vec_last(&$8->child_nodes)->node_type == AST_NODE_FUNC_RETURN)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, vec_pop(&$8->child_nodes)->child_nodes.return_statement);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type == DT_VOID_)
+                       {
+                           $$ = create_function_def_node($2, $7, $8, NULL);
+                       }
+                       else if (vec_last(&$8->child_nodes)->node_type != AST_NODE_FUNC_RETURN && $2->data_type != DT_VOID_)
+                       {
+                           yyerror("return statement missing in a non void function");
+                       }
+                       temp = NULL;
+                       
+                       if (check_function_definition($$) == -1)
+                       {
+                          yyerror("return statement different from return type");
+                       }
+                       printf("func\n");
+                   }
+                   ;
+
+class : KW_CLASS IDENTIFIER LBRACE KW_DEF IDENTIFIER COLON DT_INT COLON parameters compound_statement class_inclusions RBRACE {
+        $$ = create_class_node($2, $5, $10, $11); 
+        }   
+        ;
+
+object_decl : IDENTIFIER IDENTIFIER {
+       $$ = create_object_decl_node($1, $2);      
+}
 ;
 
-global_decl_statement_list
-	: global_decl_statement_list func_decl                                                   (rule 3)
-	| global_decl_statement_list var_decl_stmt                                               (rule 4)
-	| var_decl_stmt                                                                          (rule 5)
-	| func_decl                                                                              (rule 6)
+object_call : IDENTIFIER DOT_OPERATOR IDENTIFIER {
+        $$ = create_object_call_node($1, $3); 
+}
 ;
+parameters: parameter_list_def {
+             $$ = $1; 
+         }
+         | /* empty */ {
+             $$ = NULL;
+         }
+         ;
 
-func_decl
-	: func_header '(' formal_param_list ')' ';'                                              (rule 7)
-	| func_header '('')' ';'                                                                 (rule 8)
-;
+parameter_list_def: parameter_list_def COMMA parameter {
+                    $$ = add_parameter_node($1, $3);
+                  }
+                  | parameter {
+                      $$ = create_parameter_node();
+                      $$ = add_parameter_node($$, $1);
+                  }  
+                  ;
 
-func_def_list
-	: func_def_list func_def                                                                 (rule 9)
-	| func_def                                                                               (rule 10)
-;
+parameter: DT_INT IDENTIFIER {
+            $2->data_type = DT_INTEGER;
+            vec_push(&temp->params, $2);
 
-func_header
-	: named_type NAME                                                                        (rule 11)
-;
+            $$ = create_variable_node(AST_DT_INT, $2);
+         }
+         | DT_BOOL IDENTIFIER {
+            $2->data_type = DT_BOOLEAN;
+            vec_push(&temp->params, $2);
 
-func_def
-	: func_header '('formal_param_list')' '{'optional_local_var_decl_stmt_list statement_list'}'(rule 12)
-	| func_header '(' ')' '{' optional_local_var_decl_stmt_list statement_list '}'           (rule 13)
-;
+            $$ = create_variable_node(AST_DT_BOOL, $2);
+         }
+         | DT_CHAR IDENTIFIER {
+            $2->data_type = DT_CHAR_;
+            vec_push(&temp->params, $2);
 
-formal_param_list
-	: formal_param_list ',' formal_param                                                     (rule 14)
-	| formal_param                                                                           (rule 15)
-;
+            $$ = create_variable_node(AST_DT_CHAR, $2);
+         }
+         ;
 
-formal_param
-	: param_type NAME                                                                        (rule 16)
-;
+return_statement: KW_RETURN boolean_expression SEMICOLON {
+                    $$ = $2;
+                }
+                | KW_RETURN arithmetic_expression SEMICOLON {
+                    $$ = $2;
+                }
+                | KW_RETURN SEMICOLON {
+                    $$ = NULL;
+                }
+                ;
 
-param_type
-	: INTEGER                                                                                (rule 17)
-	| FLOAT                                                                                  (rule 18)
-	| BOOL                                                                                   (rule 19)
-	| STRING                                                                                 (rule 20)
-;
+int_function_call: INT_IDENTIFIER LPAREN function_call_parameters RPAREN {
+                if ($1 != NULL)
+                {
+                    if ($1->is_function != 1)
+                    {
+                        yyerror("not a function");
+                    }
 
-statement_list
-	: statement_list statement                                                               (rule 21)
-	| %empty                                                                                 (rule 22)
-;
+                    $$ = create_function_call_node($1, $3);
+                    if(check_function_call($$) == -1)
+                    {
+                        yyerror("wrong paramters for the function");
+                    }
+                }
+                else 
+                {
+                    yyerror("function not defined");
+                }
+                printf("function call\n");
+             }
+             ;
 
-statement
-	: assignment_statement                                                                   (rule 23)
-	| if_statement                                                                           (rule 24)
-	| do_while_statement                                                                     (rule 25)
-	| while_statement                                                                        (rule 26)
-	| compound_statement                                                                     (rule 27)
-	| print_statement                                                                        (rule 28)
-	| read_statement                                                                         (rule 29)
-	| call_statement                                                                         (rule 30)
-	| return_statement                                                                       (rule 31)
-; 
+bool_function_call: BOOL_IDENTIFIER LPAREN function_call_parameters RPAREN {
+                if ($1 != NULL)
+                {
+                    if ($1->is_function != 1)
+                    {
+                        yyerror("not a function");
+                    }
+                    
+                    $$ = create_function_call_node($1, $3);
+                    if(check_function_call($$) == -1)
+                    {
+                        yyerror("wrong paramters for the function");
+                    }
+                }
+                else 
+                {
+                    yyerror("function not defined");
+                }
+                printf("function call\n");
+             }
+             ;
 
-call_statement
-	: func_call ';'                                                                          (rule 32)
-;
+char_function_call: CHAR_IDENTIFIER LPAREN function_call_parameters RPAREN {
+                    if ($1 != NULL)
+                    {
+                        if ($1->is_function != 1)
+                        {
+                            yyerror("not a function");
+                        }
 
-func_call
-	: NAME '(' actual_arg_list ')'                                                           (rule 33)
-;
+                        $$ = create_function_call_node($1, $3);
+                        if(check_function_call($$) == -1)
+                        {
+                            yyerror("wrong paramters for the function");
+                        }
+                    }
+                    else 
+                    {
+                        yyerror("function not defined");
+                    }
+                    printf("function call\n");
+                    }
+                ;
 
-actual_arg_list
-	: non_empty_arg_list                                                                     (rule 34)
-	| %empty                                                                                 (rule 35)
-;
+void_function_call: VOID_IDENTIFIER LPAREN function_call_parameters RPAREN {
+                if ($1 != NULL)
+                {
+                    if ($1->is_function != 1)
+                    {
+                        yyerror("not a function");
+                    }
 
-non_empty_arg_list
-	: non_empty_arg_list ',' actual_arg                                                      (rule 36)
-	| actual_arg                                                                             (rule 37)
-;
+                    $$ = create_function_call_node($1, $3);
+                    if(check_function_call($$) == -1)
+                    {
+                        yyerror("wrong paramters for the function");
+                    }
+                }
+                else 
+                {
+                    yyerror("function not defined");
+                }
+                printf("function call\n");
+             }
+             ;
 
-actual_arg
-	: expression                                                                             (rule 38)
-;
+function_call_parameters: function_call_parameters COMMA function_call_datatypes {
+                            $$ = add_argument_node($1, $3);
+                        }
+                        | function_call_datatypes {
+                            $$ = create_argument_node();
+                            $$ = add_argument_node($$, $1);
+                        }
+                        | /* empty */ {
+                            $$ = NULL;
+                        }
+                        ;
+                        
+function_call_datatypes: arithmetic_expression {
+                           $$ = $1;
+                       }
+                       | boolean_expression {
+                           $$ = $1;
+                       }
+                       ;
 
-return_statement
-	: RETURN expression ';'                                                                  (rule 39)
-;
+print_string_call:  KW_PRINT LPAREN CONST_STRING RPAREN {
+                        $$ = create_print_string_function_call_node($3, 0);
+                    }
+                    | KW_PRINTLN LPAREN CONST_STRING RPAREN {
+                        $$ = create_print_string_function_call_node($3, 1);
+                    }
+                    ;
 
-optional_local_var_decl_stmt_list
-	: %empty                                                                                 (rule 40)
-	| var_decl_stmt_list                                                                     (rule 41)
-;
+print_expression_call:  KW_PRINT LPAREN arithmetic_expression RPAREN {
+                            $$ = create_print_expression_function_call_node($3, 0);
+                        }
+                        | KW_PRINT LPAREN boolean_expression RPAREN {
+                            $$ = create_print_expression_function_call_node($3, 0);
+                        }
+                        | KW_PRINTLN LPAREN arithmetic_expression RPAREN {
+                            $$ = create_print_expression_function_call_node($3, 1);
+                        }
+                        | KW_PRINTLN LPAREN boolean_expression RPAREN {
+                            $$ = create_print_expression_function_call_node($3, 1);
+                        }
+                        ;
 
-var_decl_stmt_list
-	: var_decl_stmt                                                                          (rule 42)
-	| var_decl_stmt_list var_decl_stmt                                                       (rule 43)
-;
-
-var_decl_stmt
-	: named_type var_decl_item_list ';'                                                      (rule 44)
-;
-
-var_decl_item_list
-	: var_decl_item_list ',' var_decl_item                                                   (rule 45)
-	| var_decl_item                                                                          (rule 46)
-;
-
-var_decl_item
-	: NAME                                                                                   (rule 47)
-	| NAME array_decl                                                                        (rule 48)
-	| pointer_decl NAME                                                                      (rule 49)
-;
-pointer_decl
-	: '*'                                                                                    (rule 50)
-	| '*' pointer_decl                                                                       (rule 51)
-;
-
-array_decl
-	:   '[' INTEGER_NUMBER  ']'                                                              (rule 52)
-	|   '[' INTEGER_NUMBER  ']' array_decl                                                   (rule 53)
-;
-
-named_type
-	: INTEGER                                                                                (rule 54)
-	| FLOAT                                                                                  (rule 55)
-	| VOID                                                                                   (rule 56)
-	| STRING                                                                                 (rule 57)
-	| BOOL                                                                                   (rule 58)
-;
-
-assignment_statement
-	: variable_as_operand ASSIGN expression ';'                                              (rule 59)
-	| variable_as_operand ASSIGN func_call ';'                                               (rule 60)
-	| variable_as_operand ASSIGN ADDRESSOF variable_name ';'                                 (rule 61)
-;
-
-if_condition
-	: '(' expression ')'                                                                     (rule 62)
-;
-
-if_statement
-	: IF if_condition statement ELSE statement                                               (rule 63)
-	| IF if_condition statement                                                              (rule 64)
-;
-
-do_while_statement
-	: DO statement WHILE '(' expression ')' ';'                                              (rule 65)
-;
-
-while_statement
-	: WHILE '(' expression ')' statement                                                     (rule 66)
-;
-
-compound_statement
-	: '{' statement_list '}'                                                                 (rule 67)
-; 
-
-print_statement
-	: WRITE expression ';'                                                                   (rule 68)
-
-;
-
-read_statement
-	: READ variable_name ';'                                                                 (rule 69)
-
-;
-
-expression
-	: expression '+' expression                                                              (rule 70)
-	| expression '-' expression                                                              (rule 71)
-	| expression '*' expression                                                              (rule 72)
-	| expression '/' expression                                                              (rule 73)
-	| '-' expression                                                                         (rule 74)
-	| '(' expression ')'                                                                     (rule 75)
-	| expression '?' expression ':' expression                                               (rule 76)
-	| expression AND expression                                                              (rule 77)
-	| expression OR expression                                                               (rule 78)
-	| NOT expression                                                                         (rule 79)
-	| rel_expression                                                                         (rule 80)
-	| variable_as_operand                                                                    (rule 81)
-	| constant_as_operand                                                                    (rule 82)
-;
-
-rel_expression
-	: expression LT expression                                                               (rule 83)
-	| expression LE expression                                                               (rule 84)
-	| expression GT expression                                                               (rule 85)
-	| expression GE expression                                                               (rule 86)
-	| expression NE expression                                                               (rule 87)
-	| expression EQ expression                                                               (rule 88)
-;
-
-variable_as_operand
-	: variable_name                                                                          (rule 89)
-	| array_access                                                                           (rule 90)
-	| pointer_access                                                                         (rule 91)
-
-;
-
-variable_name
-	: NAME                                                                                   (rule 92)
-;
-
-array_access
-	: variable_name array_dimensions                                                         (rule 93)
-;
-
-pointer_access
-	: '*' variable_name                                                                      (rule 94)
-	| '*' pointer_access                                                                     (rule 95)
-;
-
-array_dimensions
-	: '[' expression ']'                                                                     (rule 96)
-	| array_dimensions '[' expression ']'                                                    (rule 97)
-;
-
-constant_as_operand
-	: INTEGER_NUMBER                                                                         (rule 98)
-	| DOUBLE_NUMBER                                                                          (rule 99)
-	| STRING_CONSTANT                                                                        (rule 100)
-;
-
-class 
-    : class variable_name '{' var_decl_item_list ',' func_def '}' 
-	| class variable_name '{' global_decl_statement_list '}' 
-;
-
-object
-	: variable_name  variable_name ';'
-;
-
-access 
-	: variable_name '.' var_decl_item_list '=' constant_as_operand ';'
-;
-
+%%
